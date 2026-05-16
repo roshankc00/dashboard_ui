@@ -1,33 +1,27 @@
-# Dashboard Backend — URL Batch Checker
+# UI Setup
 
-## 1. Set up env
+## 1. Set Environment Variable
 
-```bash
-cp .env.example .env
+Create a `.env.local` file in the project root:
+
+```env
+NEXT_PUBLIC_API_URL=
 ```
 
-Update the values in `.env`.
-
-## 2. Install dependencies
+## 2. Install Dependencies
 
 ```bash
 pnpm i
 ```
 
-## 3. Start MongoDB & Redis
-
-**With Docker:**
+## 3. Run the UI
 
 ```bash
-docker compose up
+pnpm dev
 ```
 
-**Or locally:** make sure MongoDB and Redis are running, then update the env variables accordingly.
+The UI runs on **port 3000** by default:
 
-## 4. Run the backend
-
-```bash
-pnpm run dev
 ```
-
-Check which port the backend is running on — make sure the same port is set in your Next.js frontend's `NEXT_PUBLIC_API_URL`.
+http://localhost:3000
+```
