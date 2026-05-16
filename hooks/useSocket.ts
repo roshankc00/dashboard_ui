@@ -1,10 +1,10 @@
+import { API_URL } from "@/common";
 import { isRunning } from "@/lib/isRunning";
 import { clearBatchFromUrl, getBatchFromUrl, setBatchInUrl } from "@/lib/urls";
 import { Batch, UrlCheck } from "@/modules/types";
+import { useGetBatch } from "@/services";
 import { useCallback, useEffect, useRef } from "react";
 import { io, Socket } from "socket.io-client";
-
-const API = process.env.NEXT_PUBLIC_API_URL;
 
 type UseSocketOptions = {
     setBatch: React.Dispatch<React.SetStateAction<Batch | null>>;
@@ -14,15 +14,9 @@ type UseSocketOptions = {
 };
 
 export function useSocket({ setBatch, setChecks, setAlert, setSockSt }: UseSocketOptions) {
+    const getBatch = useGetBatch();
     const socketRef = useRef<Socket | null>(null);
     const activeBatchRef = useRef<string | null>(null);
-
-    const apiFetch = useCallback(async (path: string, opts: RequestInit = {}) => {
-        const res = await fetch(`${API}${path}`, { headers: { "Content-Type": "application/json" }, ...opts });
-        const json = await res.json().catch(() => ({}));
-        if (!res.ok) throw new Error(json?.error?.message ?? `Error ${res.status}`);
-        return json.data ?? json;
-    }, []);
 
     const leaveBatchRoom = useCallback((batchId: string) => {
         if (!socketRef.current) return;
@@ -34,7 +28,7 @@ export function useSocket({ setBatch, setChecks, setAlert, setSockSt }: UseSocke
 
     const getSocket = useCallback(() => {
         if (socketRef.current) return socketRef.current;
-        const s = io(API, { path: "/socket.io" });
+        const s = io(API_URL, { path: "/socket.io" });
         s.on("connect", () => {
             setSockSt("connected");
             if (activeBatchRef.current) s.emit("batch:join", activeBatchRef.current);
@@ -87,7 +81,7 @@ export function useSocket({ setBatch, setChecks, setAlert, setSockSt }: UseSocke
         setSockSt("connecting");
 
         try {
-            const detail = await apiFetch(`/api/batches/${batchId}`);
+            const detail = await getBatch(batchId);
             setBatch(detail.batch);
             setChecks(new Map(detail.urlChecks.map((c: UrlCheck) => [c.urlCheckId, c])));
             if (persistUrl) setBatchInUrl(batchId);
@@ -107,7 +101,7 @@ export function useSocket({ setBatch, setChecks, setAlert, setSockSt }: UseSocke
             setAlert({ msg: (e as Error).message, ok: false });
             clearBatchFromUrl();
         }
-    }, [apiFetch, leaveBatchRoom, setBatch, setChecks, setAlert, setSockSt, watchBatch]);
+    }, [getBatch, leaveBatchRoom, setBatch, setChecks, setAlert, setSockSt, watchBatch]);
 
     const disconnectSocket = useCallback(() => {
         if (activeBatchRef.current) leaveBatchRoom(activeBatchRef.current);
@@ -137,5 +131,5 @@ export function useSocket({ setBatch, setChecks, setAlert, setSockSt }: UseSocke
         return () => window.removeEventListener("popstate", onPopState);
     }, [startLiveBatch, leaveBatchRoom, setBatch, setChecks, setSockSt]);
 
-    return { startLiveBatch, watchBatch, disconnectSocket, activeBatchRef, apiFetch };
+    return { startLiveBatch, watchBatch, disconnectSocket, activeBatchRef };
 }
