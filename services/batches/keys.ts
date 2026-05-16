@@ -6,6 +6,7 @@ export const batchKeys = {
     detail: (id: string) => [...batchKeys.all, "detail", id] as const,
 };
 
+// 
 export function batchDetailQuery(batchId: string) {
     return queryOptions({
         queryKey: batchKeys.detail(batchId),
