@@ -10,8 +10,8 @@ export function useRetryFailedBatch() {
     return useMutation({
         mutationFn: retryFailedBatch,
         mutationKey: [...batchKeys.all, "retry-failed"],
-        onSuccess: (_, batchId) => {
-            queryClient.invalidateQueries({ queryKey: batchKeys.detail(batchId) });
+        onSuccess: async (_, batchId) => {
+            await queryClient.resetQueries({ queryKey: batchKeys.detail(batchId) });
         },
     });
 }
