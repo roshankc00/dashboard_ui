@@ -10,36 +10,11 @@ import Header from "../home/Header";
 import { useSocket } from "@/hooks/useSocket";
 import { useCancelBatch, useCreateBatch, useRetryFailedBatch } from "@/services";
 import { Button } from "@/components/ui/button";
+import { batchStatusClass } from "@/lib/batchStatusClass";
+import { socketStatusClass } from "@/lib/socketStatusClass";
+import { checkStatusClass } from "@/lib/checkStatusClass";
 
-function batchStatusClass(status: string) {
-    return cn(
-        "ml-2 text-xs font-bold uppercase",
-        status === "completed" && "text-green-600",
-        status === "cancelled" && "text-orange-500",
-        status === "running" && "text-blue-600",
-        !["completed", "cancelled", "running"].includes(status) && "text-muted-foreground",
-    );
-}
-
-function checkStatusClass(status: string) {
-    return cn(
-        status === "completed" && "text-green-600",
-        status === "failed" && "text-red-600",
-        status === "running" && "text-blue-600",
-        !["completed", "failed", "running"].includes(status) && "text-muted-foreground",
-    );
-}
-
-function socketStatusClass(sockSt: string) {
-    return cn(
-        "text-xs",
-        sockSt === "connected" && "text-green-600",
-        sockSt === "error" && "text-red-600",
-        sockSt !== "connected" && sockSt !== "error" && "text-orange-500",
-    );
-}
-
-export default function Home() {
+export const Uploads = () => {
     const [input, setInput] = useState("");
     const [fileName, setFileName] = useState("");
     const [batch, setBatch] = useState<Batch | null>(null);
