@@ -1,5 +1,5 @@
 "use client";
-import { useRef, useState, useCallback } from "react";
+import { useRef, useState, useCallback, useEffect } from "react";
 import { io, Socket } from "socket.io-client";
 
 const API = process.env.NEXT_PUBLIC_API_URL;
@@ -20,6 +20,10 @@ function parseUrls(input: string) {
     .filter(u => u && !seen.has(u) && seen.add(u));
 }
 
+function isRunning(status: string) {
+  return status === "queued" || status === "running";
+}
+
 export default function Home() {
   const [input, setInput] = useState("");
   const [fileName, setFileName] = useState("");
@@ -33,6 +37,25 @@ export default function Home() {
 
   const urls = parseUrls(input);
 
+
+  function getBatchFromUrl() {
+    if (typeof window === "undefined") return null;
+    return new URLSearchParams(window.location.search).get("batch");
+  }
+
+  function setBatchInUrl(batchId: string) {
+    const url = new URL(window.location.href);
+    url.searchParams.set("batch", batchId);
+    window.history.replaceState({ batchId }, "", url);
+  }
+
+  function clearBatchFromUrl() {
+    const url = new URL(window.location.href);
+    url.searchParams.delete("batch");
+    window.history.replaceState(null, "", url);
+  }
+
+
   const apiFetch = async (path: string, opts: RequestInit = {}) => {
     const res = await fetch(`${API}${path}`, { headers: { "Content-Type": "application/json" }, ...opts });
     const json = await res.json().catch(() => ({}));
@@ -43,23 +66,37 @@ export default function Home() {
   const getSocket = useCallback(() => {
     if (socketRef.current) return socketRef.current;
     const s = io(API, { path: "/socket.io" });
-    s.on("connect", () => { setSockSt("connected"); if (activeBatch.current) s.emit("batch:join", activeBatch.current); });
+    s.on("connect", () => {
+      setSockSt("connected");
+      if (activeBatch.current) s.emit("batch:join", activeBatch.current);
+    });
     s.on("disconnect", () => setSockSt("reconnecting"));
     s.on("connect_error", () => setSockSt("error"));
     socketRef.current = s;
     return s;
   }, []);
 
-  const watchBatch = useCallback(async (batchId: string) => {
+  function leaveBatchRoom(batchId: string) {
+    if (!socketRef.current) return;
+    socketRef.current.emit("batch:leave", batchId);
+    socketRef.current.off("batch:progress");
+    socketRef.current.off("batch:urlResult");
+    socketRef.current.off("batch:cancelled");
+  }
+
+  function watchBatch(batchId: string) {
     activeBatch.current = batchId;
-    const detail = await apiFetch(`/api/batches/${batchId}`);
-    setBatch(detail.batch);
-    setChecks(new Map(detail.urlChecks.map((c: UrlCheck) => [c.urlCheckId, c])));
+    setSockSt("connecting");
     const s = getSocket();
     s.off("batch:progress"); s.off("batch:urlResult"); s.off("batch:cancelled");
+
     s.on("batch:progress", (p: Batch & { batchId: string; batchStatus: string }) => {
       if (p.batchId !== batchId) return;
       setBatch(prev => prev ? { ...prev, ...p, status: p.batchStatus } : prev);
+      if (!isRunning(p.batchStatus)) {
+        leaveBatchRoom(batchId);
+        setSockSt("connected");
+      }
     });
     s.on("batch:urlResult", (r: UrlCheck & { batchId: string }) => {
       if (r.batchId !== batchId) return;
@@ -68,24 +105,80 @@ export default function Home() {
     s.on("batch:cancelled", ({ batchId: id }: { batchId: string }) => {
       if (id !== batchId) return;
       setBatch(prev => prev ? { ...prev, status: "cancelled" } : prev);
+      leaveBatchRoom(batchId);
     });
-    if (s.connected) s.emit("batch:join", batchId);
+
+    if (s.connected) { s.emit("batch:join", batchId); setSockSt("connected"); }
+  }
+
+  const startLiveBatch = useCallback(async (batchId: string, opts: { persistUrl?: boolean; quiet?: boolean } = {}) => {
+    const { persistUrl = true, quiet = false } = opts;
+
+    // stop any previous watch  
+    if (activeBatch.current) leaveBatchRoom(activeBatch.current);
+    activeBatch.current = batchId;
+    setSockSt("connecting");
+
+    try {
+      const detail = await apiFetch(`/api/batches/${batchId}`);
+      setBatch(detail.batch);
+      setChecks(new Map(detail.urlChecks.map((c: UrlCheck) => [c.urlCheckId, c])));
+      if (persistUrl) setBatchInUrl(batchId);
+
+      if (!isRunning(detail.batch.status)) {
+        // batch already finished — just show results, no socket needed
+        setSockSt("connected");
+        if (!quiet) setAlert({ msg: `Batch restored (${detail.batch.status}).`, ok: true });
+        return;
+      }
+
+      if (!quiet) setAlert({ msg: "Batch restored — live updates connected.", ok: true });
+      watchBatch(batchId);
+    } catch (e: unknown) {
+      setSockSt("error");
+      setAlert({ msg: (e as Error).message, ok: false });
+      clearBatchFromUrl();
+    }
   }, [getSocket]);
+
+  useEffect(() => {
+    const id = getBatchFromUrl();
+    if (id) void startLiveBatch(id, { quiet: true });
+
+    const onPopState = () => {
+      const next = getBatchFromUrl();
+      if (next && next !== activeBatch.current) {
+        void startLiveBatch(next, { quiet: true });
+      } else if (!next) {
+        if (activeBatch.current) leaveBatchRoom(activeBatch.current);
+        activeBatch.current = null;
+        setBatch(null);
+        setChecks(new Map());
+        setSockSt("idle");
+      }
+    };
+    window.addEventListener("popstate", onPopState);
+    return () => window.removeEventListener("popstate", onPopState);
+  }, [startLiveBatch]);
 
   const submit = async () => {
     if (!urls.length) return setAlert({ msg: "No valid URLs found.", ok: false });
     setLoading(true); setAlert(null);
     try {
       const { batchId, totalUrls } = await apiFetch("/api/batches", { method: "POST", body: JSON.stringify({ input }) });
-      setAlert({ msg: `Checking ${totalUrls} URL(s)…`, ok: true });
-      await watchBatch(batchId);
+      setAlert({ msg: `Batch created — checking ${totalUrls} URL(s).`, ok: true });
+      await startLiveBatch(batchId);
     } catch (e: unknown) { setAlert({ msg: (e as Error).message, ok: false }); }
     finally { setLoading(false); }
   };
 
   const clear = () => {
     setInput(""); setFileName(""); setBatch(null); setChecks(new Map()); setAlert(null);
-    activeBatch.current = null; socketRef.current?.disconnect(); socketRef.current = null; setSockSt("idle");
+    if (activeBatch.current) leaveBatchRoom(activeBatch.current);
+    activeBatch.current = null;
+    socketRef.current?.disconnect(); socketRef.current = null;
+    setSockSt("idle");
+    clearBatchFromUrl();
   };
 
   const loadFile = (f: File) => {
@@ -96,23 +189,26 @@ export default function Home() {
 
   const checkList = Array.from(checks.values());
   const pct = batch?.totalUrls ? Math.round((batch.finishedCount / batch.totalUrls) * 100) : 0;
-  const running = batch?.status === "queued" || batch?.status === "running";
+  const running = batch ? isRunning(batch.status) : false;
 
   return (
     <div style={{ maxWidth: 720, margin: "40px auto", padding: "0 16px", fontFamily: "sans-serif", fontSize: 14, color: "#111" }}>
 
-      {/* Header start */}
+      {/* header start */}
       <h2 style={{ marginBottom: 4 }}>URL Batch Checker</h2>
-      <p style={{ color: "#666", marginBottom: 20 }}>Paste URLs or upload a CSV — one URL per line.</p>
-      {/* Header end */}
+      <p style={{ color: "#666", marginBottom: 20 }}>
+        Paste URLs or upload a CSV — one URL per line.
+        Refresh-safe: batch state is saved in the URL and restored from the API.
+      </p>
+      {/* header end */}
 
-      {/* Alert start */}
+      {/* alert start */}
       {alert && (
         <p style={{ marginBottom: 12, color: alert.ok ? "green" : "red" }}>{alert.msg}</p>
       )}
-      {/* Alert end */}
+      {/* alert end */}
 
-      {/* Drop zone start */}
+      {/* drop zone start */}
       <div
         onClick={() => document.getElementById("fi")?.click()}
         onDragOver={e => e.preventDefault()}
@@ -123,28 +219,28 @@ export default function Home() {
         Drop a .csv / .txt here or click to browse
         {fileName && <span style={{ marginLeft: 8, color: "green" }}>({fileName})</span>}
       </div>
-      {/* Drop zone end */}
+      {/* drop zone end */}
 
-      {/* Paste input start */}
+      {/* paste input start */}
       <textarea
         value={input} onChange={e => setInput(e.target.value)}
-        placeholder={"https://example.com\nhttps://another.com"}
+        placeholder={"Website URLs"}
         style={{ width: "100%", height: 100, fontFamily: "monospace", fontSize: 12, padding: 8, boxSizing: "border-box", border: "1px solid #ccc", borderRadius: 4, resize: "vertical", marginBottom: 8 }} />
       {urls.length > 0 && <p style={{ color: "#555", marginBottom: 8 }}>{urls.length} unique URL(s)</p>}
-      {/* Paste input end */}
+      {/* paste input end */}
 
-      {/* Actions start */}
+      {/* actions start */}
       <div style={{ display: "flex", gap: 8, marginBottom: 24 }}>
         <button onClick={submit} disabled={loading} style={{ padding: "6px 16px", cursor: "pointer" }}>
           {loading ? "Submitting…" : "Start"}
         </button>
         <button onClick={clear} style={{ padding: "6px 16px", cursor: "pointer" }}>Clear</button>
       </div>
-      {/* Actions end */}
+      {/* actions end */}
 
       {batch && (<>
 
-        {/* Batch header start */}
+        {/* batch header start */}
         <div style={{ marginBottom: 8, display: "flex", justifyContent: "space-between", alignItems: "center" }}>
           <div>
             <span style={{ color: "#555" }}>Batch: </span>
@@ -160,22 +256,22 @@ export default function Home() {
             ● {sockSt}
           </span>
         </div>
-        {/* Batch header end */}
+        {/* batch header end */}
 
-        {/* Stats start */}
+        {/* stats start */}
         <p style={{ color: "#555", marginBottom: 6 }}>
           {batch.finishedCount}/{batch.totalUrls} done &nbsp;·&nbsp;
           <span style={{ color: "green" }}>{batch.completedOk} ok</span> &nbsp;·&nbsp;
           <span style={{ color: "red" }}>{batch.failedCount} failed</span> &nbsp;·&nbsp;
           {batch.cancelledCount} cancelled
         </p>
-        {/* Stats end */}
+        {/* stats end */}
 
-        {/* Progress bar start */}
+        {/* progress bar start */}
         <progress value={pct} max={100} style={{ width: "100%", marginBottom: 10, display: "block" }} />
-        {/* Progress bar end */}
+        {/* progress bar end */}
 
-        {/* Batch actions start */}
+        {/* batch actions start */}
         <div style={{ display: "flex", gap: 8, marginBottom: 12 }}>
           {running && (
             <button onClick={() => activeBatch.current && apiFetch(`/api/batches/${activeBatch.current}/cancel`, { method: "POST" })}
@@ -190,9 +286,9 @@ export default function Home() {
             }} style={{ padding: "4px 12px", cursor: "pointer" }}>Retry failed</button>
           )}
         </div>
-        {/* Batch actions end */}
+        {/* batch actions end */}
 
-        {/* Results table start */}
+        {/* results table start */}
         <table style={{ width: "100%", borderCollapse: "collapse", fontSize: 13 }}>
           <thead>
             <tr style={{ borderBottom: "1px solid #ddd", color: "#555" }}>
@@ -215,7 +311,7 @@ export default function Home() {
             ))}
           </tbody>
         </table>
-        {/* Results table end */}
+        {/* results table end */}
 
       </>)}
     </div>
