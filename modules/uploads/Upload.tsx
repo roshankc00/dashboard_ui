@@ -1,14 +1,11 @@
 "use client";
-import { useRef, useState, useCallback, useEffect, useMemo } from "react";
-import { io, Socket } from "socket.io-client";
+import { useState, useMemo } from "react";
 import { Batch, UrlCheck } from "../types";
 import { parseUrls } from "@/lib/parseUrls";
 import { isRunning } from "@/lib/isRunning";
-import { clearBatchFromUrl, getBatchFromUrl, setBatchInUrl } from "@/lib/urls";
+import { clearBatchFromUrl } from "@/lib/urls";
 import Header from "../home/Header";
-
-const API = process.env.NEXT_PUBLIC_API_URL;
-
+import { useSocket } from "@/hooks/useSocket";
 
 export default function Home() {
     const [input, setInput] = useState("");
@@ -18,139 +15,47 @@ export default function Home() {
     const [sockSt, setSockSt] = useState("idle");
     const [alert, setAlert] = useState<{ msg: string; ok: boolean } | null>(null);
     const [loading, setLoading] = useState(false);
-    const socketRef = useRef<Socket | null>(null);
-    const activeBatch = useRef<string | null>(null);
+
+    const { startLiveBatch, watchBatch, disconnectSocket, activeBatchRef, apiFetch } = useSocket({
+        setBatch,
+        setChecks,
+        setAlert,
+        setSockSt,
+    });
 
     const urls = useMemo(() => parseUrls(input), [input]);
 
-    const apiFetch = async (path: string, opts: RequestInit = {}) => {
-        const res = await fetch(`${API}${path}`, { headers: { "Content-Type": "application/json" }, ...opts });
-        const json = await res.json().catch(() => ({}));
-        if (!res.ok) throw new Error(json?.error?.message ?? `Error ${res.status}`);
-        return json.data ?? json;
-    };
-
-    const getSocket = useCallback(() => {
-        if (socketRef.current) return socketRef.current;
-        const s = io(API, { path: "/socket.io" });
-        s.on("connect", () => {
-            setSockSt("connected");
-            if (activeBatch.current) s.emit("batch:join", activeBatch.current);
-        });
-        s.on("disconnect", () => setSockSt("reconnecting"));
-        s.on("connect_error", () => setSockSt("error"));
-        socketRef.current = s;
-        return s;
-    }, []);
-
-    function leaveBatchRoom(batchId: string) {
-        if (!socketRef.current) return;
-        socketRef.current.emit("batch:leave", batchId);
-        socketRef.current.off("batch:progress");
-        socketRef.current.off("batch:urlResult");
-        socketRef.current.off("batch:cancelled");
-    }
-
-    function watchBatch(batchId: string) {
-        activeBatch.current = batchId;
-        setSockSt("connecting");
-        const s = getSocket();
-        s.off("batch:progress"); s.off("batch:urlResult"); s.off("batch:cancelled");
-
-        s.on("batch:progress", (p: Batch & { batchId: string; batchStatus: string }) => {
-            if (p.batchId !== batchId) return;
-            setBatch(prev => prev ? { ...prev, ...p, status: p.batchStatus } : prev);
-            if (!isRunning(p.batchStatus)) {
-                leaveBatchRoom(batchId);
-                setSockSt("connected");
-            }
-        });
-        s.on("batch:urlResult", (r: UrlCheck & { batchId: string }) => {
-            if (r.batchId !== batchId) return;
-            setChecks(prev => new Map(prev).set(r.urlCheckId, r));
-        });
-        s.on("batch:cancelled", ({ batchId: id }: { batchId: string }) => {
-            if (id !== batchId) return;
-            setBatch(prev => prev ? { ...prev, status: "cancelled" } : prev);
-            leaveBatchRoom(batchId);
-        });
-
-        if (s.connected) { s.emit("batch:join", batchId); setSockSt("connected"); }
-    }
-
-    const startLiveBatch = useCallback(async (batchId: string, opts: { persistUrl?: boolean; quiet?: boolean } = {}) => {
-        const { persistUrl = true, quiet = false } = opts;
-
-        // stop any previous watch  
-        if (activeBatch.current) leaveBatchRoom(activeBatch.current);
-        activeBatch.current = batchId;
-        setSockSt("connecting");
-
-        try {
-            const detail = await apiFetch(`/api/batches/${batchId}`);
-            setBatch(detail.batch);
-            setChecks(new Map(detail.urlChecks.map((c: UrlCheck) => [c.urlCheckId, c])));
-            if (persistUrl) setBatchInUrl(batchId);
-
-            if (!isRunning(detail.batch.status)) {
-                // batch already finished — just show results, no socket needed
-                setSockSt("connected");
-                if (!quiet) setAlert({ msg: `Batch restored (${detail.batch.status}).`, ok: true });
-                return;
-            }
-
-            if (!quiet) setAlert({ msg: "Batch restored — live updates connected.", ok: true });
-            watchBatch(batchId);
-        } catch (e: unknown) {
-            setSockSt("error");
-            setAlert({ msg: (e as Error).message, ok: false });
-            clearBatchFromUrl();
-        }
-    }, [getSocket]);
-
-    useEffect(() => {
-        const id = getBatchFromUrl();
-        if (id) void startLiveBatch(id, { quiet: true });
-
-        const onPopState = () => {
-            const next = getBatchFromUrl();
-            if (next && next !== activeBatch.current) {
-                void startLiveBatch(next, { quiet: true });
-            } else if (!next) {
-                if (activeBatch.current) leaveBatchRoom(activeBatch.current);
-                activeBatch.current = null;
-                setBatch(null);
-                setChecks(new Map());
-                setSockSt("idle");
-            }
-        };
-        window.addEventListener("popstate", onPopState);
-        return () => window.removeEventListener("popstate", onPopState);
-    }, [startLiveBatch]);
-
     const submit = async () => {
         if (!urls.length) return setAlert({ msg: "No valid URLs found.", ok: false });
-        setLoading(true); setAlert(null);
+        setLoading(true);
+        setAlert(null);
         try {
             const { batchId, totalUrls } = await apiFetch("/api/batches", { method: "POST", body: JSON.stringify({ input }) });
             setAlert({ msg: `Batch created — checking ${totalUrls} URL(s).`, ok: true });
             await startLiveBatch(batchId);
-        } catch (e: unknown) { setAlert({ msg: (e as Error).message, ok: false }); }
-        finally { setLoading(false); }
+        } catch (e: unknown) {
+            setAlert({ msg: (e as Error).message, ok: false });
+        } finally {
+            setLoading(false);
+        }
     };
 
     const clear = () => {
-        setInput(""); setFileName(""); setBatch(null); setChecks(new Map()); setAlert(null);
-        if (activeBatch.current) leaveBatchRoom(activeBatch.current);
-        activeBatch.current = null;
-        socketRef.current?.disconnect(); socketRef.current = null;
-        setSockSt("idle");
+        setInput("");
+        setFileName("");
+        setBatch(null);
+        setChecks(new Map());
+        setAlert(null);
+        disconnectSocket();
         clearBatchFromUrl();
     };
 
     const loadFile = (f: File) => {
         const r = new FileReader();
-        r.onload = () => { setInput(String(r.result ?? "")); setFileName(f.name); };
+        r.onload = () => {
+            setInput(String(r.result ?? ""));
+            setFileName(f.name);
+        };
         r.readAsText(f);
     };
 
@@ -236,16 +141,26 @@ export default function Home() {
                 {/* batch actions start */}
                 <div style={{ display: "flex", gap: 8, marginBottom: 12 }}>
                     {running && (
-                        <button onClick={() => activeBatch.current && apiFetch(`/api/batches/${activeBatch.current}/cancel`, { method: "POST" })}
-                            style={{ padding: "4px 12px", cursor: "pointer" }}>Cancel</button>
+                        <button
+                            onClick={() => activeBatchRef.current && apiFetch(`/api/batches/${activeBatchRef.current}/cancel`, { method: "POST" })}
+                            style={{ padding: "4px 12px", cursor: "pointer" }}
+                        >
+                            Cancel
+                        </button>
                     )}
                     {batch.status === "completed" && batch.failedCount > 0 && (
-                        <button onClick={async () => {
-                            if (!activeBatch.current) return;
-                            await apiFetch(`/api/batches/${activeBatch.current}/retry-failed`, { method: "POST" });
-                            setBatch(b => b ? { ...b, status: "running" } : b);
-                            watchBatch(activeBatch.current!);
-                        }} style={{ padding: "4px 12px", cursor: "pointer" }}>Retry failed</button>
+                        <button
+                            onClick={async () => {
+                                const batchId = activeBatchRef.current ?? batch.id;
+                                await apiFetch(`/api/batches/${batchId}/retry-failed`, { method: "POST" });
+                                activeBatchRef.current = batchId;
+                                setBatch(b => (b ? { ...b, status: "running" } : b));
+                                watchBatch(batchId);
+                            }}
+                            style={{ padding: "4px 12px", cursor: "pointer" }}
+                        >
+                            Retry failed
+                        </button>
                     )}
                 </div>
                 {/* batch actions end */}
