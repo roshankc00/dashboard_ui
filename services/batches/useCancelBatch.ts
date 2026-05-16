@@ -10,8 +10,8 @@ export function useCancelBatch() {
     return useMutation({
         mutationFn: cancelBatch,
         mutationKey: [...batchKeys.all, "cancel"],
-        onSuccess: (_, batchId) => {
-            queryClient.invalidateQueries({ queryKey: batchKeys.detail(batchId) });
+        onSuccess: async (_, batchId) => {
+            await queryClient.resetQueries({ queryKey: batchKeys.detail(batchId) });
         },
     });
 }

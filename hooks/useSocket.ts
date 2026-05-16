@@ -73,15 +73,18 @@ export function useSocket({ setBatch, setChecks, setAlert, setSockSt }: UseSocke
         }
     }, [getSocket, leaveBatchRoom, setBatch, setChecks, setSockSt]);
 
-    const startLiveBatch = useCallback(async (batchId: string, opts: { persistUrl?: boolean; quiet?: boolean } = {}) => {
-        const { persistUrl = true, quiet = false } = opts;
+    const startLiveBatch = useCallback(async (
+        batchId: string,
+        opts: { persistUrl?: boolean; quiet?: boolean; refresh?: boolean } = {},
+    ) => {
+        const { persistUrl = true, quiet = false, refresh = false } = opts;
 
         if (activeBatchRef.current) leaveBatchRoom(activeBatchRef.current);
         activeBatchRef.current = batchId;
         setSockSt("connecting");
 
         try {
-            const detail = await getBatch(batchId);
+            const detail = await getBatch(batchId, { refresh });
             setBatch(detail.batch);
             setChecks(new Map(detail.urlChecks.map((c: UrlCheck) => [c.urlCheckId, c])));
             if (persistUrl) setBatchInUrl(batchId);

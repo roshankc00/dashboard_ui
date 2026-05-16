@@ -25,7 +25,7 @@ export const Uploads = () => {
     const cancelBatch = useCancelBatch();
     const retryFailedBatch = useRetryFailedBatch();
 
-    const { startLiveBatch, watchBatch, disconnectSocket, activeBatchRef } = useSocket({
+    const { startLiveBatch, disconnectSocket, activeBatchRef } = useSocket({
         setBatch,
         setChecks,
         setAlert,
@@ -165,9 +165,7 @@ export const Uploads = () => {
                                     const batchId = activeBatchRef.current ?? batch.id;
                                     try {
                                         await retryFailedBatch.mutateAsync(batchId);
-                                        activeBatchRef.current = batchId;
-                                        setBatch(b => (b ? { ...b, status: "running" } : b));
-                                        watchBatch(batchId);
+                                        await startLiveBatch(batchId, { quiet: true, refresh: true });
                                     } catch (e: unknown) {
                                         setAlert({ msg: (e as Error).message, ok: false });
                                     }
